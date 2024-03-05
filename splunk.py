@@ -12,22 +12,16 @@ import time
 from tqdm import tqdm
 
 try:
-    import requests  # Third-party import after standard library imports
+    import requests
 except ImportError:
     print("Error: 'requests' module not found. Please install it before proceeding.")
-    sys.exit(1)
-
-try:
-    from tqdm import tqdm
-except ImportError:
-    print("Error: 'tqdm' module not found. Please install it before proceeding.")
     sys.exit(1)
 
 def is_admin():
     """Check if the script is running with administrative privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except AttributeError:  # More specific exception
+    except AttributeError:
         print("Could not determine admin status.")
         return False
 
@@ -45,8 +39,9 @@ def generate_password():
 
 def download_splunk():
     """Download Splunk Forwarder if not already downloaded."""
-    file_path = "C:\\Windows\\Temp\\splunk-9.2.0.msi"
-    url = "https://download.splunk.com/products/splunk/releases/9.2.0.1/windows/splunk-9.2.0.1-d8ae995bf219-x64-release.msi"
+    file_path = r"C:\\Windows\\Temp\\splunk-9.2.0.msi"
+    url = ("https://download.splunk.com/products/splunk/releases/"
+           "9.2.0.1/windows/splunk-9.2.0.1-d8ae995bf219-x64-release.msi")
     if not os.path.exists(file_path):
         print("Downloading Splunk Universal Forwarder...", flush=True)
         response = requests.get(url, stream=True)
@@ -59,7 +54,7 @@ def download_splunk():
         print(f"Splunk Universal Forwarder installer already exists at {file_path}", flush=True)
 
 def install_splunk():
-    """Install Splunk with generated admin password and show an artificial progress bar."""
+    """Install Splunk with a generated admin password."""
     admin_password = generate_password()
     install_command = f'msiexec /i "C:\\Windows\\Temp\\splunk-9.2.0.msi" /quiet AGREETOLICENSE=Yes LAUNCHSPLUNK=1 SPLUNKPASSWORD="{admin_password}"'
     process = subprocess.Popen(install_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -84,7 +79,7 @@ def install_splunk():
     return admin_password
 
 def add_and_replace_folders(source_dir, dest_dir):
-    """Add and replace folders from the source directory to the destination directory."""
+    """Replace content from the source directory to the destination directory."""
     if not os.path.exists(source_dir):
         print(f"Source folder {source_dir} does not exist.", flush=True)
         return
@@ -111,11 +106,28 @@ def add_and_replace_folders(source_dir, dest_dir):
     print("Press Enter to continue...", flush=True)
     input()
 
+def copy_and_replace_file(source_file, dest_dir):
+    """Copy a file from the source location to the destination directory and replace it if it exists."""
+    if not os.path.exists(source_file):
+        print(f"Source file {source_file} does not exist.", flush=True)
+        return
+
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir)
+
+    dest_file = os.path.join(dest_dir, os.path.basename(source_file))
+
+    if os.path.exists(dest_file):
+        print(f"Replacing existing file: {dest_file}", flush=True)
+        os.remove(dest_file)
+
+    shutil.copy2(source_file, dest_file)
+    print(f"{os.path.basename(source_file)} has been copied to {dest_dir}", flush=True)
+
 def add_license_and_restart(admin_password):
     """Add a license to Splunk and restart the service."""
     license_file = r"C:\Windows\Temp\xml_license.lic"
     splunk_bin = r"C:\Program Files\Splunk\bin\splunk.exe"
-
     os.chdir(os.path.dirname(splunk_bin))
 
     add_license_cmd = [splunk_bin, "add", "licenses", license_file, "-auth", f"admin:{admin_password}"]
@@ -155,18 +167,21 @@ def main():
     download_splunk()
     admin_password = install_splunk()
 
-    # Path where the script is located
     script_dir = os.path.dirname(os.path.realpath(__file__))
 
-    # Replace the deployment-apps folder
+    # Replace deployment-apps and apps folders
     deployment_apps_source = os.path.join(script_dir, 'deployment-apps')
     deployment_apps_dest = r"C:\Program Files\Splunk\etc\deployment-apps"
     add_and_replace_folders(deployment_apps_source, deployment_apps_dest)
 
-    # Replace the apps folder
     apps_source = os.path.join(script_dir, 'apps')
     apps_dest = r"C:\Program Files\Splunk\etc\apps"
     add_and_replace_folders(apps_source, apps_dest)
+
+    # Copy and replace serverclass.conf
+    serverclass_source = r"C:\Windows\Temp\serverclass.conf"
+    serverclass_dest_dir = r"C:\Program Files\Splunk\etc\system\local"
+    copy_and_replace_file(serverclass_source, serverclass_dest_dir)
 
     add_license_and_restart(admin_password)
     clean_up()

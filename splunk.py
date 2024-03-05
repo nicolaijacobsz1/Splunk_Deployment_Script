@@ -5,19 +5,30 @@ import ctypes
 import os
 import sys
 import random
-import string
-import time
 import shutil
+import string
 import subprocess
+import time
 from tqdm import tqdm
-import requests  # Third-party import after standard library imports
+
+try:
+    import requests  # Third-party import after standard library imports
+except ImportError:
+    print("Error: 'requests' module not found. Please install it before proceeding.")
+    sys.exit(1)
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("Error: 'tqdm' module not found. Please install it before proceeding.")
+    sys.exit(1)
 
 def is_admin():
     """Check if the script is running with administrative privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except Exception as e:
-        print(f"Error checking admin status: {e}")
+    except AttributeError:  # More specific exception
+        print("Could not determine admin status.")
         return False
 
 if not is_admin():
@@ -34,7 +45,7 @@ def generate_password():
 
 def download_splunk():
     """Download Splunk Forwarder if not already downloaded."""
-    file_path = r"C:\Windows\Temp\splunk-9.2.0.msi"
+    file_path = "C:\\Windows\\Temp\\splunk-9.2.0.msi"
     url = "https://download.splunk.com/products/splunk/releases/9.2.0.1/windows/splunk-9.2.0.1-d8ae995bf219-x64-release.msi"
     if not os.path.exists(file_path):
         print("Downloading Splunk Universal Forwarder...", flush=True)
@@ -143,7 +154,20 @@ def main():
 
     download_splunk()
     admin_password = install_splunk()
-    add_and_replace_folders(r"C:\Windows\Temp\deployment-apps", r"C:\Program Files\Splunk\etc\deployment-apps")
+
+    # Path where the script is located
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+
+    # Replace the deployment-apps folder
+    deployment_apps_source = os.path.join(script_dir, 'deployment-apps')
+    deployment_apps_dest = r"C:\Program Files\Splunk\etc\deployment-apps"
+    add_and_replace_folders(deployment_apps_source, deployment_apps_dest)
+
+    # Replace the apps folder
+    apps_source = os.path.join(script_dir, 'apps')
+    apps_dest = r"C:\Program Files\Splunk\etc\apps"
+    add_and_replace_folders(apps_source, apps_dest)
+
     add_license_and_restart(admin_password)
     clean_up()
 

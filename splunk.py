@@ -130,7 +130,8 @@ def copy_and_replace_file(source_file, dest_dir):
 
 def add_license_and_restart(admin_password):
     """Add a license to Splunk and restart the service."""
-    license_file = r"C:\Windows\Temp\xml_license.lic"
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    license_file = os.path.join(script_dir, "xml_license.lic")
     splunk_bin = r"C:\Program Files\Splunk\bin\splunk.exe"
     os.chdir(os.path.dirname(splunk_bin))
 
@@ -185,7 +186,7 @@ def main():
     add_and_replace_folders(apps_source, apps_dest)
 
     # Copy and replace serverclass.conf
-    serverclass_source = r"C:\Windows\Temp\serverclass.conf"
+    serverclass_source = os.path.join(script_dir, "serverclass.conf")
     serverclass_dest_dir = r"C:\Program Files\Splunk\etc\system\local"
     copy_and_replace_file(serverclass_source, serverclass_dest_dir)
 

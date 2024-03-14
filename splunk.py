@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Splunk Deployment Script - IPG."""
+"""Splunk Deployment Script"""
 
 import ctypes
 import os

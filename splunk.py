@@ -142,6 +142,29 @@ def add_license_and_restart(admin_password):
     else:
         print(f"Failed to add license: {result.stderr}", flush=True)
 
+def install_splunk_app(admin_password):
+    """Install a Splunk app from a .spl file."""
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    app_file_name = "splunkclouduf.spl"  # Replace with your actual app file name
+    app_file_path = os.path.join(script_dir, app_file_name)
+
+    # Ensure the .spl file exists
+    if not os.path.exists(app_file_path):
+        print(f"App file {app_file_path} does not exist.", flush=True)
+        return
+
+    splunk_bin = r"C:\Program Files\Splunk\bin\splunk.exe"
+    os.chdir(os.path.dirname(splunk_bin))
+
+    install_app_cmd = [splunk_bin, "install", "app", app_file_path, "-auth", f"admin:{admin_password}"]
+    result = subprocess.run(install_app_cmd, shell=True, text=True, capture_output=True, check=False)
+
+    if result.returncode == 0:
+        print("App installed successfully.", flush=True)
+    else:
+        print(f"Failed to install app: {result.stderr}", flush=True)
+
+    print("Press Enter to continue...", flush=True)
     print("Press Enter to Restart Splunk Instance", flush=True)
     input()
     print("Please Wait...", flush=True)
@@ -190,7 +213,9 @@ def main():
     serverclass_dest_dir = r"C:\Program Files\Splunk\etc\system\local"
     copy_and_replace_file(serverclass_source, serverclass_dest_dir)
 
+    # Add license, install app, and restart
     add_license_and_restart(admin_password)
+    install_splunk_app(admin_password)  # Install the Splunk app
     clean_up()
 
     print("Splunk deployment script completed. Press Enter to exit.", flush=True)

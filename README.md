@@ -1,4 +1,4 @@
-# Splunk Deployment Script
+# Splunk Deployment Script (Windows)
 
 This script automates the deployment of Splunk configurations, apps, and license installation on a target machine.
 

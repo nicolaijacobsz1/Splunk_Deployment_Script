@@ -9,7 +9,7 @@ import shutil
 import string
 import subprocess
 import time
-from tqdm import tqdm
+import tqdm
 
 try:
     import requests
@@ -32,7 +32,7 @@ if not is_admin():
 def generate_password():
     """Generate a random password for the deployment server."""
     length = 12
-    chars = string.ascii_letters + string.digits + "!@#$%&*()-_+="
+    chars = string.ascii_letters + string.digits + "!#*()-_+="
     password = ''.join(random.choice(chars) for _ in range(length))
     print(f"Password has been created: {password}", flush=True)
     return password
@@ -44,28 +44,32 @@ def download_splunk():
            "9.2.0.1/windows/splunk-9.2.0.1-d8ae995bf219-x64-release.msi")
     if not os.path.exists(file_path):
         print("Downloading Splunk Universal Forwarder...", flush=True)
-        response = requests.get(url, stream=True)
+        response = requests.get(url, stream=True, timeout=(10, 30))
         total_size = int(response.headers.get('content-length', 0))
         with open(file_path, "wb") as file:
-            for data in tqdm(response.iter_content(1024), total=total_size // 1024, desc="Downloading", unit='KB'):
+            for data in tqdm.tqdm(response.iter_content(1024), total=total_size // 1024, desc="Downloading", unit='KB'):
                 file.write(data)
-        print(f"Splunk Universal Forwarder has been downloaded and saved to {file_path}", flush=True)
+        print(f"Splunk has been downloaded and saved to {file_path}", flush=True)
     else:
         print(f"Splunk Universal Forwarder installer already exists at {file_path}", flush=True)
 
 def install_splunk():
     """Install Splunk with a generated admin password."""
     admin_password = generate_password()
-    install_command = f'msiexec /i "C:\\Windows\\Temp\\splunk-9.2.0.msi" /quiet AGREETOLICENSE=Yes LAUNCHSPLUNK=1 SPLUNKPASSWORD="{admin_password}"'
-    process = subprocess.Popen(install_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    install_command = (
+        f'msiexec /i "C:\\Windows\\Temp\\splunk-9.2.0.msi" '
+        f'/quiet AGREETOLICENSE=Yes LAUNCHSPLUNK=1 '
+        f'SPLUNKPASSWORD="{admin_password}"'
+    )
 
-    with tqdm(total=100, desc="Installing Splunk") as progress_bar:
-        while True:
-            if process.poll() is not None:
-                progress_bar.update(100 - progress_bar.n)
-                break
-            progress_bar.update(2)
-            time.sleep(2)
+    with subprocess.Popen(install_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        with tqdm.tqdm(total=100, desc="Installing Splunk") as progress_bar:
+            while True:
+                if process.poll() is not None:
+                    progress_bar.update(100 - progress_bar.n)
+                    break
+                progress_bar.update(2)
+                time.sleep(2)
 
     if process.returncode == 0:
         print("\nInstallation successful.", flush=True)
@@ -107,7 +111,7 @@ def add_and_replace_folders(source_dir, dest_dir):
     input()
 
 def copy_and_replace_file(source_file, dest_dir):
-    """Copy a file from the source location to the destination directory and replace it if it exists."""
+    """Copy a file to proper dest and replace it if it exists."""
     if not os.path.exists(source_file):
         print(f"Source file {source_file} does not exist.", flush=True)
         return
@@ -139,6 +143,7 @@ def add_license_and_restart(admin_password):
 
     print("Press Enter to Restart Splunk Instance", flush=True)
     input()
+    print("Please Wait...", flush=True)
 
     restart_cmd = [splunk_bin, "restart"]
     result = subprocess.run(restart_cmd, shell=True, text=True, capture_output=True, check=False)
@@ -160,6 +165,7 @@ def clean_up():
     time.sleep(2)
 
 def main():
+    """Main Function."""
     if not is_admin():
         print("Script is not running with administrative privileges. Exiting.")
         return

@@ -1,15 +1,15 @@
 #!/usr/bin/env python
-"""Splunk Deployment Script"""
+"""Splunk Universal Forwarder deployment script for Windows."""
 
+import argparse
 import ctypes
 import os
-import sys
-import random
 import shutil
 import string
 import subprocess
-import time
-import tqdm
+import sys
+from pathlib import Path
+from secrets import choice as secure_choice
 
 try:
     import requests
@@ -17,209 +17,216 @@ except ImportError:
     print("Error: 'requests' module not found. Please install it before proceeding.")
     sys.exit(1)
 
-def is_admin():
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_VERSION = "10.2.2"
+DEFAULT_BUILD = "979a540794c5"
+DEFAULT_UF_HOME = Path(r"C:\Program Files\SplunkUniversalForwarder")
+DEFAULT_TEMP_DIR = Path(r"C:\Windows\Temp")
+
+
+def is_admin() -> bool:
     """Check if the script is running with administrative privileges."""
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except AttributeError:
         print("Could not determine admin status.")
         return False
 
-if not is_admin():
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+
+def elevate_if_needed() -> None:
+    """Relaunch with elevation if not already running as admin."""
+    if is_admin():
+        return
+
+    ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        sys.executable,
+        " ".join(f'"{arg}"' for arg in sys.argv),
+        None,
+        1,
+    )
     sys.exit()
 
-def generate_password():
-    """Generate a random password for the deployment server."""
-    length = 12
+
+def generate_password(length: int = 20) -> str:
+    """Generate a random password for the Splunk admin account."""
     chars = string.ascii_letters + string.digits + "!#*()-_+="
-    password = ''.join(random.choice(chars) for _ in range(length))
-    print(f"Password has been created: {password}", flush=True)
+    password = "".join(secure_choice(chars) for _ in range(length))
+    print("Generated randomized admin password.", flush=True)
     return password
 
-def download_splunk():
-    """Download Splunk Forwarder if not already downloaded."""
-    file_path = r"C:\\Windows\\Temp\\splunk-9.2.0.msi"
-    url = ("https://download.splunk.com/products/splunk/releases/"
-           "9.2.0.1/windows/splunk-9.2.0.1-d8ae995bf219-x64-release.msi")
-    if not os.path.exists(file_path):
-        print("Downloading Splunk Universal Forwarder...", flush=True)
-        response = requests.get(url, stream=True, timeout=(10, 30))
-        total_size = int(response.headers.get('content-length', 0))
-        with open(file_path, "wb") as file:
-            for data in tqdm.tqdm(response.iter_content(1024), total=total_size // 1024, desc="Downloading", unit='KB'):
-                file.write(data)
-        print(f"Splunk has been downloaded and saved to {file_path}", flush=True)
-    else:
-        print(f"Splunk Universal Forwarder installer already exists at {file_path}", flush=True)
 
-def install_splunk():
-    """Install Splunk with a generated admin password."""
-    admin_password = generate_password()
-    install_command = (
-        f'msiexec /i "C:\\Windows\\Temp\\splunk-9.2.0.msi" '
-        f'/quiet AGREETOLICENSE=Yes LAUNCHSPLUNK=1 '
-        f'SPLUNKPASSWORD="{admin_password}"'
+def build_download_url(version: str, build: str) -> tuple[str, str]:
+    """Build installer file name and download URL."""
+    major_minor_patch = ".".join(version.split(".")[:3])
+    file_name = f"splunkforwarder-{version}-{build}-windows-x64.msi"
+    url = (
+        "https://download.splunk.com/products/universalforwarder/releases/"
+        f"{version}/windows/{file_name}"
     )
+    local_name = f"splunkforwarder-{major_minor_patch}.msi"
+    return local_name, url
 
-    with subprocess.Popen(install_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
-        with tqdm.tqdm(total=100, desc="Installing Splunk") as progress_bar:
-            while True:
-                if process.poll() is not None:
-                    progress_bar.update(100 - progress_bar.n)
-                    break
-                progress_bar.update(2)
-                time.sleep(2)
 
-    if process.returncode == 0:
-        print("\nInstallation successful.", flush=True)
-    else:
-        stderr = process.stderr.read().decode()
-        print(f"Installation failed with error code {process.returncode}: {stderr}", flush=True)
+def download_splunk(version: str, build: str, temp_dir: Path) -> Path:
+    """Download Splunk Universal Forwarder if not already downloaded."""
+    local_name, url = build_download_url(version, build)
+    file_path = temp_dir / local_name
 
-    print("Press Enter to continue...", flush=True)
-    input()
+    if file_path.exists():
+        print(f"Installer already present: {file_path}", flush=True)
+        return file_path
 
-    return admin_password
+    print(f"Downloading Splunk Universal Forwarder from {url}", flush=True)
+    response = requests.get(url, stream=True, timeout=(10, 60))
+    response.raise_for_status()
 
-def add_and_replace_folders(source_dir, dest_dir):
-    """Replace content from the source directory to the destination directory."""
-    if not os.path.exists(source_dir):
-        print(f"Source folder {source_dir} does not exist.", flush=True)
+    with file_path.open("wb") as handle:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                handle.write(chunk)
+
+    print(f"Downloaded installer to {file_path}", flush=True)
+    return file_path
+
+
+def run_command(command: list[str], context: str, cwd: Path | None = None) -> None:
+    """Run command and fail with context-rich error if needed."""
+    result = subprocess.run(command, text=True, capture_output=True, cwd=cwd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{context} failed (exit {result.returncode}).\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+
+def install_splunk(msi_path: Path, admin_password: str) -> None:
+    """Install Splunk UF silently."""
+    install_command = [
+        "msiexec",
+        "/i",
+        str(msi_path),
+        "/quiet",
+        "AGREETOLICENSE=Yes",
+        "LAUNCHSPLUNK=0",
+        f"SPLUNKPASSWORD={admin_password}",
+    ]
+    print("Installing Splunk Universal Forwarder...", flush=True)
+    run_command(install_command, "Splunk UF installation")
+    print("Installation complete.", flush=True)
+
+
+def add_and_replace_folders(source_dir: Path, dest_dir: Path) -> None:
+    """Replace content from source directory to destination directory."""
+    if not source_dir.exists():
+        print(f"Skipping missing folder: {source_dir}", flush=True)
         return
 
-    if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
-    for item in os.listdir(source_dir):
-        s_item = os.path.join(source_dir, item)
-        d_item = os.path.join(dest_dir, item)
-
-        if os.path.exists(d_item):
-            if os.path.isdir(d_item):
-                shutil.rmtree(d_item)
+    for item in source_dir.iterdir():
+        dest_item = dest_dir / item.name
+        if dest_item.exists():
+            if dest_item.is_dir():
+                shutil.rmtree(dest_item)
             else:
-                os.remove(d_item)
+                dest_item.unlink()
 
-        if os.path.isdir(s_item):
-            shutil.copytree(s_item, d_item)
+        if item.is_dir():
+            shutil.copytree(item, dest_item)
         else:
-            shutil.copy2(s_item, d_item)
+            shutil.copy2(item, dest_item)
 
-    print(f"Contents from {source_dir} have been added to {dest_dir}.", flush=True)
-    print("Press Enter to continue...", flush=True)
-    input()
+    print(f"Synced folder: {source_dir} -> {dest_dir}", flush=True)
 
-def copy_and_replace_file(source_file, dest_dir):
-    """Copy a file to proper dest and replace it if it exists."""
-    if not os.path.exists(source_file):
-        print(f"Source file {source_file} does not exist.", flush=True)
+
+def copy_and_replace_file(source_file: Path, dest_dir: Path) -> None:
+    """Copy a file to destination and replace if it exists."""
+    if not source_file.exists():
+        print(f"Skipping missing file: {source_file}", flush=True)
         return
 
-    if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_file = dest_dir / source_file.name
 
-    dest_file = os.path.join(dest_dir, os.path.basename(source_file))
-
-    if os.path.exists(dest_file):
-        print(f"Replacing existing file: {dest_file}", flush=True)
-        os.remove(dest_file)
+    if dest_file.exists():
+        dest_file.unlink()
 
     shutil.copy2(source_file, dest_file)
-    print(f"{os.path.basename(source_file)} has been copied to {dest_dir}", flush=True)
+    print(f"Copied {source_file.name} -> {dest_dir}", flush=True)
 
-def add_license_and_restart(admin_password):
-    """Add a license to Splunk and restart the service."""
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    license_file = os.path.join(script_dir, "xml_license.lic")
-    splunk_bin = r"C:\Program Files\Splunk\bin\splunk.exe"
-    os.chdir(os.path.dirname(splunk_bin))
 
-    add_license_cmd = [splunk_bin, "add", "licenses", license_file, "-auth", f"admin:{admin_password}"]
-    result = subprocess.run(add_license_cmd, shell=True, text=True, capture_output=True, check=False)
-    if result.returncode == 0:
-        print("License added successfully.", flush=True)
-    else:
-        print(f"Failed to add license: {result.stderr}", flush=True)
-
-def install_splunk_app(admin_password):
-    """Install a Splunk app from a .spl file."""
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    app_file_name = "splunkclouduf.spl"  # Replace with your actual app file name
-    app_file_path = os.path.join(script_dir, app_file_name)
-
-    # Ensure the .spl file exists
-    if not os.path.exists(app_file_path):
-        print(f"App file {app_file_path} does not exist.", flush=True)
+def add_license(uf_home: Path, admin_password: str) -> None:
+    """Add a license file if one is present."""
+    license_file = SCRIPT_DIR / "xml_license.lic"
+    if not license_file.exists():
+        print("No license file found; skipping license install.", flush=True)
         return
 
-    splunk_bin = r"C:\Program Files\Splunk\bin\splunk.exe"
-    os.chdir(os.path.dirname(splunk_bin))
+    splunk_bin = uf_home / "bin" / "splunk.exe"
+    command = [str(splunk_bin), "add", "licenses", str(license_file), "-auth", f"admin:{admin_password}"]
+    run_command(command, "License import", cwd=splunk_bin.parent)
+    print("License added successfully.", flush=True)
 
-    install_app_cmd = [splunk_bin, "install", "app", app_file_path, "-auth", f"admin:{admin_password}"]
-    result = subprocess.run(install_app_cmd, shell=True, text=True, capture_output=True, check=False)
 
-    if result.returncode == 0:
-        print("App installed successfully.", flush=True)
-    else:
-        print(f"Failed to install app: {result.stderr}", flush=True)
-
-    print("Press Enter to continue...", flush=True)
-    print("Press Enter to Restart Splunk Instance", flush=True)
-    input()
-    print("Please Wait...", flush=True)
-
-    restart_cmd = [splunk_bin, "restart"]
-    result = subprocess.run(restart_cmd, shell=True, text=True, capture_output=True, check=False)
-    if result.returncode == 0:
-        print("Splunk restarted successfully.", flush=True)
-    else:
-        print(f"Failed to restart Splunk: {result.stderr}", flush=True)
-
-    print("Press Enter to continue...", flush=True)
-    input()
-
-def clean_up():
-    """Clean up installation artifacts."""
-    print("Cleaning up...", flush=True)
-    try:
-        os.remove(r"C:\Windows\Temp\splunk-9.2.0.msi")
-    except FileNotFoundError:
-        print("File already removed.", flush=True)
-    time.sleep(2)
-
-def main():
-    """Main Function."""
-    if not is_admin():
-        print("Script is not running with administrative privileges. Exiting.")
+def install_splunk_app(uf_home: Path, admin_password: str) -> None:
+    """Install local Splunk app bundle if present."""
+    app_file = SCRIPT_DIR / "splunkclouduf.spl"
+    if not app_file.exists():
+        print("No splunkclouduf.spl found; skipping app install.", flush=True)
         return
 
-    download_splunk()
-    admin_password = install_splunk()
+    splunk_bin = uf_home / "bin" / "splunk.exe"
+    command = [str(splunk_bin), "install", "app", str(app_file), "-auth", f"admin:{admin_password}"]
+    run_command(command, "App installation", cwd=splunk_bin.parent)
+    print("App installed successfully.", flush=True)
 
-    script_dir = os.path.dirname(os.path.realpath(__file__))
 
-    # Replace deployment-apps and apps folders
-    deployment_apps_source = os.path.join(script_dir, 'deployment-apps')
-    deployment_apps_dest = r"C:\Program Files\Splunk\etc\deployment-apps"
-    add_and_replace_folders(deployment_apps_source, deployment_apps_dest)
+def restart_splunk(uf_home: Path) -> None:
+    """Restart Splunk UF service."""
+    splunk_bin = uf_home / "bin" / "splunk.exe"
+    run_command([str(splunk_bin), "restart"], "Splunk restart", cwd=splunk_bin.parent)
+    print("Splunk restarted successfully.", flush=True)
 
-    apps_source = os.path.join(script_dir, 'apps')
-    apps_dest = r"C:\Program Files\Splunk\etc\apps"
-    add_and_replace_folders(apps_source, apps_dest)
 
-    # Copy and replace serverclass.conf
-    serverclass_source = os.path.join(script_dir, "serverclass.conf")
-    serverclass_dest_dir = r"C:\Program Files\Splunk\etc\system\local"
-    copy_and_replace_file(serverclass_source, serverclass_dest_dir)
+def clean_up(msi_path: Path) -> None:
+    """Clean up installer artifact."""
+    if msi_path.exists():
+        msi_path.unlink()
+        print(f"Removed installer artifact: {msi_path}", flush=True)
 
-    # Add license, install app, and restart
-    add_license_and_restart(admin_password)
-    install_splunk_app(admin_password)  # Install the Splunk app
-    clean_up()
 
-    print("Splunk deployment script completed. Press Enter to exit.", flush=True)
-    input()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Deploy Splunk Universal Forwarder on Windows")
+    parser.add_argument("--version", default=DEFAULT_VERSION, help="UF version, ex: 10.2.2")
+    parser.add_argument("--build", default=DEFAULT_BUILD, help="UF build hash used in installer URL")
+    parser.add_argument("--uf-home", default=str(DEFAULT_UF_HOME), help="UF install directory")
+    parser.add_argument("--keep-installer", action="store_true", help="Keep installer in temp folder")
+    return parser.parse_args()
+
+
+def main() -> None:
+    elevate_if_needed()
+    args = parse_args()
+
+    uf_home = Path(args.uf_home)
+    installer_path = download_splunk(args.version, args.build, DEFAULT_TEMP_DIR)
+    admin_password = generate_password()
+
+    install_splunk(installer_path, admin_password)
+
+    add_and_replace_folders(SCRIPT_DIR / "deployment-apps", uf_home / "etc" / "deployment-apps")
+    add_and_replace_folders(SCRIPT_DIR / "apps", uf_home / "etc" / "apps")
+    copy_and_replace_file(SCRIPT_DIR / "serverclass.conf", uf_home / "etc" / "system" / "local")
+
+    add_license(uf_home, admin_password)
+    install_splunk_app(uf_home, admin_password)
+    restart_splunk(uf_home)
+
+    if not args.keep_installer:
+        clean_up(installer_path)
+
 
 if __name__ == "__main__":
     main()
